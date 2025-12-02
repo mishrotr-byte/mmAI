@@ -1,0 +1,145 @@
+import { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import axios from 'axios'
+import { Send, Bot, User, Gamepad2, Moon, Sun, LogOut } from 'lucide-react'
+
+const avatars = Array.from({length: 120}, (_,i) => `/avatars/${i+1}.png`)
+
+function App() {
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
+  const [darkMode, setDarkMode] = useState(true)
+  const [user, setUser] = useState({id: 1, avatar: avatars[42]})
+  const messagesEndRef = useRef(null)
+
+  useEffect(() => {
+    // Загружаем историю
+    axios.get(`http://localhost:8000/api/history/${user.id}`).then(res => {
+      setMessages(res.data)
+    })
+  }, [])
+
+  const sendMessage = async () => {
+    if (!input.trim()) return
+    const userMsg = { role: 'user', content: input }
+    setMessages(prev => [...prev, userMsg])
+    setInput('')
+    setIsTyping(true)
+
+    const eventSource = new EventSource(`http://localhost:8000/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: input, user_id: user.id })
+    })
+
+    let botResponse = ''
+    setMessages(prev => [...prev, { role: 'assistant', content: '', typing: true }])
+
+    eventSource.onmessage = (e) => {
+      if (e.data === '[DONE]') {
+        eventSource.close()
+        setIsTyping(false)
+        return
+      }
+      botResponse += e.data
+      setMessages(prev => {
+        const newMsgs = [...prev]
+        newMsgs[newMsgs.length - 1].content = botResponse
+        return newMsgs
+      })
+    }
+  }
+
+  return (
+    <>
+      <div className={`min-h-screen ${darkMode ? 'bg-gray-900' : 'bg-gray-50'} transition-colors`}>
+        {/* Шапка */}
+        <div className="border-b border-gray-800 bg-gray-950/50 backdrop-blur">
+          <div className="max-w-5xl mx-auto p-4 flex justify-between items-center justify-between">
+            <div className="flex items-center gap-4">
+              <img src="/logo.png" className="w-12 h-12 rounded-xl" />
+              <h1 className="text-2xl font-bold text-white">MMRLS AI</h1>
+            </div>
+            <div className="flex gap-3">
+              <a href="https://t.me/mmrls_bot" target="_blank"
+                 className="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-xl text-white font-medium flex items-center gap-2">
+                <Bot className="w-5 h-5"/> Перейти в бот @mmrls_bot
+              </a>
+              <button onClick={() => setDarkMode(!darkMode)}>
+                {darkMode ? <Sun className="text-yellow-400"/> : <Moon className="text-gray-700"/>}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="max-w-5xl mx-auto p-4 flex gap-8">
+          {/* Чат */}
+          <div className="flex-1">
+            <div className="bg-gray-800/50 backdrop-blur rounded-2xl p-6 h-[80vh] flex flex-col">
+              <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600">
+                <AnimatePresence>
+                  {messages.map((msg, i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={`flex gap-4 mb-6 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
+                    >
+                      <img src={msg.role === 'user' ? user.avatar : '/bot-avatar.png'} 
+                           className="w-10 h-10 rounded-full"/>
+                      <div className={`max-w-xl ${msg.role === 'user' ? 'bg-blue-600' : 'bg-gray-700'} rounded-2xl p-4 text-white`}>
+                        {msg.typing ? (
+                          <div className="flex gap-1">
+                            <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0ms'}}></span>
+                            <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '150ms'}}></span>
+                            <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '300ms'}}></span>
+                          </div>
+                        ) : msg.content}
+                      </div>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+                {isTyping && <div className="text-gray-500 text-sm">ИИ печатает...</div>}
+                <div ref={messagesEndRef} />
+              </div>
+
+              <div className="mt-6 flex gap-3">
+                <input
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && sendMessage()}
+                  placeholder="Спроси что угодно..."
+                  className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-5 py-4 text-white focus:outline-none focus:border-blue-500"
+                />
+                <button
+                  onClick={sendMessage}
+                  className="bg-blue-600 hover:bg-blue-700 px-6 py-4 rounded-xl">
+                  <Send className="w-6 h-6"/>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Боковая панель с играми */}
+          <div className="w-80">
+            <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+              <Gamepad2/> Мини-игры
+            </h2>
+            <div className="grid grid-cols-2 gap-4">
+              <button className="bg-gradient-to-br from-purple-600 to-pink-600 p-8 rounded-2xl text-white font-bold hover:scale-105 transition">
+                Тетрис
+              </button>
+              <button className="bg-gradient-to-br from-green-600 to-teal-600 p-8 rounded-2xl text-white font-bold hover:scale-105 transition">
+                Змейка
+              </button>
+              {/* Добавишь ещё 10 игр — код готов */}
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+export default App
