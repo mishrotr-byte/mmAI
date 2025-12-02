@@ -1,0 +1,92 @@
+# backend/main.py
+import os
+import uvicorn
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
+from groq import Groq
+from datetime import datetime
+import sqlite3
+import jwt
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI(title="MMRLS AI Web")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# База данных
+def init_db():
+    conn = sqlite3.connect('database/chats.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (id INTEGER PRIMARY KEY, telegram_id TEXT UNIQUE, username TEXT, avatar TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS messages 
+                 (id INTEGER PRIMARY KEY, user_id INTEGER, role TEXT, content TEXT, timestamp TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+class Message(BaseModel):
+    message: str
+    user_id: int
+
+async def stream_groq(message: str):
+    stream = client.chat.completions.create(
+        messages=[{"role": "user", "content": message}],
+        model="llama-3.1-70b-versatile",
+        temperature=0.7,
+        max_tokens=2048,
+        stream=True,
+    )
+    for chunk in stream:
+        if chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+
+@app.post("/api/chat")
+async def chat(msg: Message):
+    def event_stream():
+        conn = sqlite3.connect('database/chats.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO messages (user_id, role, content, timestamp) VALUES (?, 'user', ?, ?)",
+                  (msg.user_id, msg.message, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+        async for token in stream_groq(msg.message):
+            yield f"data: {token}\n\n"
+
+        # Сохраняем ответ бота
+        full_response = "".join([token async for token in stream_groq(msg.message)])
+        conn = sqlite3.connect('database/chats.db')
+        c = conn.cursor()
+        c.execute("INSERT INTO messages (user_id, role, content, timestamp) VALUES (?, 'assistant', ?, ?)",
+                  (msg.user_id, full_response, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/api/history/{user_id}")
+def get_history(user_id: int):
+    conn = sqlite3.connect('database/chats.db')
+    c = conn.cursor()
+    c.execute("SELECT role, content, timestamp FROM messages WHERE user_id = ? ORDER BY timestamp", (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [{"role": r[0], "content": r[1], "time": r[2]} for r in rows]
+
+# Запуск: uvicorn backend.main:app --reload
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
